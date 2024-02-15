@@ -1,4 +1,4 @@
-use ethers::contract::ContractFactory;
+use ethers::contract::{abigen, ContractFactory};
 use ethers::core::utils::Anvil;
 use ethers::middleware::SignerMiddleware;
 use ethers::providers::{Http, Middleware, Provider};
@@ -6,6 +6,8 @@ use ethers::signers::coins_bip39::English;
 use ethers::signers::MnemonicBuilder;
 use ethers::signers::Signer;
 use ethers::solc::{Artifact, Project, ProjectPathsConfig};
+use ethers::types::U256;
+use ethers::utils::{hex, keccak256};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -18,6 +20,7 @@ use tokio::time::{sleep, Duration};
 const DEFAULT_MNEMONIC: &str = "test test test test test test test test test test test junk";
 const MAX_RETRIES: u16 = 10;
 const DEFAULT_CHAIN_ID: u16 = 1337;
+const SALT: &str = "65617274686d696e64"; // "earthmind"
 
 async fn deploy_contracts(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     println!("Waiting for Anvil on port {} to be ready...", port);
@@ -48,17 +51,6 @@ async fn deploy_contracts(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         .no_artifacts()
         .build()?;
 
-    // compile the contract and get the ABI and bytecode
-    let output = project.compile()?;
-    let contract = output
-        .find_first("MockGateway")
-        .expect("could not find contract")
-        .clone();
-
-    println!("Contract compiled successfully");
-
-    let (abi, bytecode, _) = contract.into_parts();
-
     // create wallet from default mnemonic
     let wallet = MnemonicBuilder::<English>::default()
         .phrase(DEFAULT_MNEMONIC)
@@ -69,15 +61,81 @@ async fn deploy_contracts(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let client = SignerMiddleware::new(provider, wallet.with_chain_id(DEFAULT_CHAIN_ID));
     let client = Arc::new(client);
 
-    // create a factory to deploy instances of the contract
-    let factory = ContractFactory::new(abi.unwrap(), bytecode.unwrap(), client.clone());
+    // compile the contract and get the ABI and bytecode
+    let output = project.compile()?;
+    println!("Contracts compiled successfully");
 
-    println!("Deploying contract...");
+    let create2_deployer = output
+        .find_first("Create2Deployer")
+        .expect("could not find contract")
+        .clone();
+
+    let mock_gateway_contract = output
+        .find_first("MockGateway")
+        .expect("could not find contract")
+        .clone();
+
+    let (abi_deployer, bytecode_deployer, _) = create2_deployer.into_parts();
+
+    let (_, bytecode_gateway, _) = mock_gateway_contract.into_parts();
+
+    // create a factory to deploy the create 2 deployer contract
+    let factory = ContractFactory::new(
+        abi_deployer.unwrap(),
+        bytecode_deployer.unwrap(),
+        client.clone(),
+    );
+
+    println!("Deploying create 2 contract...");
+
+    abigen!(
+        Create2Deployer,
+        r#"[
+            function deploy(uint256 amount, bytes32 salt, bytes memory bytecode) external payable returns (address addr)
+        ]"#,
+    );
 
     match factory.deploy(())?.send().await {
         Ok(contract) => {
             let addr = contract.address();
-            println!("Contract deployed to: {}", addr);
+            println!("Create 2 contract deployed to: {}", addr);
+
+            let amount = U256::from(1);
+
+            println!("aqui 1");
+
+            let bytecode = bytecode_gateway.unwrap(); // Bytecode del contrato de gateway.
+
+            println!("aqui");
+
+            let salt_bytes = hex::decode(SALT)?;
+
+            let salt_hash = keccak256(&salt_bytes);
+
+            // let salt: [u8; 32] = match hex::decode(SALT) {
+            //     Ok(bytes) => match bytes.try_into() {
+            //         Ok(array) => array,
+            //         Err(_) => return Err("Salt debe ser de exactamente 32 bytes.".into()),
+            //     },
+            //     Err(_) => return Err("Fallo al decodificar SALT.".into()),
+            // };
+
+            println!("Deploying gateway contract...");
+
+            let contract_deployer = Create2Deployer::new(addr, client);
+
+            let deploy_future = contract_deployer.deploy(amount, salt_hash, bytecode);
+            let deploy_result = deploy_future.send().await;
+
+            match deploy_result {
+                Ok(_) => {
+                    println!("Gateway contract deployed successfully to");
+                }
+                Err(error) => {
+                    eprintln!("Failed to deploy gateway contract: {}", error);
+                    return Err(error.into());
+                }
+            }
         }
         Err(e) => {
             eprintln!("Failed to deploy contract: {}", e);
