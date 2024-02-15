@@ -1,7 +1,7 @@
 use ethers::contract::ContractFactory;
 use ethers::core::utils::Anvil;
 use ethers::middleware::SignerMiddleware;
-use ethers::providers::{Http, Provider};
+use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::coins_bip39::English;
 use ethers::signers::MnemonicBuilder;
 use ethers::signers::Signer;
@@ -13,14 +13,27 @@ use std::sync::{
 };
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::task;
+use tokio::time::{sleep, Duration};
 
 const DEFAULT_MNEMONIC: &str = "test test test test test test test test test test test junk";
+const MAX_RETRIES: u16 = 10;
+const DEFAULT_CHAIN_ID: u16 = 1337;
 
-async fn deploy_contracts(
-    provider: Provider<Http>,
-    port: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Deploying contracts to localhost{}", port);
+async fn deploy_contracts(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Waiting for Anvil on port {} to be ready...", port);
+
+    let provider = Provider::<Http>::try_from(format!("http://localhost:{}", port))?;
+    for _ in 0..MAX_RETRIES {
+        if provider.get_chainid().await.is_ok() {
+            println!("Anvil on port {} is ready!", port);
+            break;
+        } else {
+            sleep(Duration::from_secs(1)).await;
+            println!("Anvil on port {} is not ready yet. Retrying...", port);
+        }
+    }
+
+    println!("Deploying contracts to localhost:{}", port);
 
     // configuring paths for the contract compilation
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("contracts");
@@ -29,51 +42,58 @@ async fn deploy_contracts(
         .sources(&root)
         .build()?;
 
-    // Obtener la instancia del proyecto solc usando las rutas anteriores
     let project = Project::builder()
         .paths(paths)
         .ephemeral()
         .no_artifacts()
         .build()?;
 
-    // Compilar el proyecto y obtener los artefactos
+    // compile the contract and get the ABI and bytecode
     let output = project.compile()?;
     let contract = output
         .find_first("MockGateway")
         .expect("could not find contract")
         .clone();
 
+    println!("Contract compiled successfully");
+
     let (abi, bytecode, _) = contract.into_parts();
 
-    // Crear la wallet a partir de la mnemotecnia
+    // create wallet from default mnemonic
     let wallet = MnemonicBuilder::<English>::default()
         .phrase(DEFAULT_MNEMONIC)
         .build()?;
 
     println!("Wallet address: {}", wallet.address());
 
-    let client = SignerMiddleware::new(provider, wallet);
+    let client = SignerMiddleware::new(provider, wallet.with_chain_id(DEFAULT_CHAIN_ID));
     let client = Arc::new(client);
 
-    // Crear una fábrica que se utilizará para desplegar instancias del contrato
+    // create a factory to deploy instances of the contract
     let factory = ContractFactory::new(abi.unwrap(), bytecode.unwrap(), client.clone());
 
-    // Desplegarlo con los argumentos del constructor
-    let contract = factory.deploy(())?.send().await?;
+    println!("Deploying contract...");
 
-    // Obtener la dirección del contrato
-    let addr = contract.address();
-
-    println!("Contract deployed to: {}", addr);
+    match factory.deploy(())?.send().await {
+        Ok(contract) => {
+            let addr = contract.address();
+            println!("Contract deployed to: {}", addr);
+        }
+        Err(e) => {
+            eprintln!("Failed to deploy contract: {}", e);
+            return Err(e.into()); // convert the error to match the return type
+        }
+    }
 
     Ok(())
 }
 
-async fn start_anvil_instance(port: u16, shutdown_signal: Arc<AtomicBool>) -> Provider<Http> {
+async fn start_anvil_instance(port: u16, shutdown_signal: Arc<AtomicBool>) {
     task::spawn_blocking(move || {
         let _anvil_instance = Anvil::new()
             .port(port)
             .mnemonic(DEFAULT_MNEMONIC)
+            .chain_id(DEFAULT_CHAIN_ID)
             .args(vec!["--base-fee", "100"])
             .spawn();
 
@@ -88,35 +108,27 @@ async fn start_anvil_instance(port: u16, shutdown_signal: Arc<AtomicBool>) -> Pr
     })
     .await
     .expect("Failed to execute Anvil instance");
-
-    Provider::<Http>::try_from(format!("http://localhost:{}", port))
-        .expect("Failed to connect to Anvil")
 }
 
-async fn run_anvil_and_deploy(shutdown_signal: Arc<AtomicBool>) {
+async fn run_anvil_and_deploy(
+    shutdown_signal: Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let port1: u16 = 8545;
     let port2: u16 = 8546;
 
-    // start anvil instances and get the providers
-    let (provider1, provider2) = tokio::join!(
+    let _ = tokio::join!(
         start_anvil_instance(port1, shutdown_signal.clone()),
-        start_anvil_instance(port2, shutdown_signal.clone())
+        start_anvil_instance(port2, shutdown_signal.clone()),
+        deploy_contracts(port1),
+        deploy_contracts(port2)
     );
 
-    // deploy contracts to each anvil instance
-    if let Err(e) = deploy_contracts(provider1, port1).await {
-        eprintln!("Error deploying contracts with provider1: {}", e);
-    }
-
-    if let Err(e) = deploy_contracts(provider2, port2).await {
-        eprintln!("Error deploying contracts with provider2: {}", e);
-    }
+    Ok(())
 }
 
-async fn graceful_shutdown(shutdown_signal: Arc<AtomicBool>) {
+async fn monitor_shutdown_signal(shutdown_signal: Arc<AtomicBool>) {
     let mut term_signal =
         signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
-
     term_signal.recv().await;
     println!("SIGTERM received, initiating graceful shutdown...");
     shutdown_signal.store(true, Ordering::SeqCst);
@@ -127,10 +139,13 @@ async fn main() {
     let shutdown_signal = Arc::new(AtomicBool::new(false));
 
     tokio::select! {
-        _ = run_anvil_and_deploy(shutdown_signal.clone()) => {
-            println!("Anvil instances started and contracts deployed. Waiting for SIGTERM to shutdown.");
+        result = run_anvil_and_deploy(shutdown_signal.clone()) => {
+            match result {
+                Ok(_) => println!("Anvil instances started and contracts deployed successfully."),
+                Err(e) => eprintln!("An error occurred: {}", e),
+            }
         },
-        _ = graceful_shutdown(shutdown_signal) => {
+        _ = monitor_shutdown_signal(shutdown_signal) => {
             println!("Shutdown signal received, exiting.");
         },
     }
