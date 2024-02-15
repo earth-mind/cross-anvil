@@ -1,0 +1,11 @@
+[package]
+name = "multiple-anvil"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ethers = { version = "2.0", features = ["ws", "solc"] }
+tokio = { version = "1", features = ["full"] }
+# ethers-solc = { git = "https://github.com/gakonst/ethers-rs" }
