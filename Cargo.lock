@@ -430,6 +430,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cross-anvil"
+version = "0.1.0"
+dependencies = [
+ "ethers",
+ "tokio",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1694,14 +1702,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.48.0",
-]
-
-[[package]]
-name = "multiple-anvil"
-version = "0.1.0"
-dependencies = [
- "ethers",
- "tokio",
 ]
 
 [[package]]
