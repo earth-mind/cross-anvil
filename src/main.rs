@@ -3,7 +3,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::task;
 
 const DEFAULT_MNEMONIC: &str = "test test test test test test test test test test test junk";
@@ -46,11 +45,34 @@ async fn run_anvil_and_deploy(
 }
 
 async fn monitor_shutdown_signal(shutdown_signal: Arc<AtomicBool>) {
-    let mut term_signal =
-        signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
-    term_signal.recv().await;
-    println!("SIGTERM received, initiating graceful shutdown...");
-    shutdown_signal.store(true, Ordering::SeqCst);
+    #[cfg(unix)]
+    async fn unix_signal(shutdown_signal: Arc<AtomicBool>) {
+        let mut term_signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Failed to install SIGTERM handler");
+        term_signal.recv().await;
+        println!("SIGTERM received, initiating graceful shutdown...");
+        shutdown_signal.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(windows)]
+    async fn windows_ctrl_c(shutdown_signal: Arc<AtomicBool>) {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+        println!("Ctrl+C received, initiating graceful shutdown...");
+        shutdown_signal.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(unix)]
+    {
+        unix_signal(shutdown_signal).await;
+    }
+
+    #[cfg(windows)]
+    {
+        windows_ctrl_c(shutdown_signal).await;
+    }
 }
 
 #[tokio::main]
