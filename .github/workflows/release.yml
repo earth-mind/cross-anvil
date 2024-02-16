@@ -100,14 +100,15 @@ jobs:
               shell: bash
               run: |
                 bin_name="cross-anvil_${VERSION_NAME}_${PLATFORM_NAME}_${ARCH}"
-                if [ "$PLATFORM_NAME" == "linux" ] || [ "$PLATFORM_NAME" == "darwin" ]; then
+                if [[ "$PLATFORM_NAME" == "linux" ]] || [[ "$PLATFORM_NAME" == "darwin" ]]; then
                     tar -czvf "${bin_name}.tar.gz" -C ./target/${TARGET}/release cross-anvil
+                    echo "file_name=${bin_name}.tar.gz" >> $GITHUB_OUTPUT
                 else
                     cd ./target/${TARGET}/release
                     7z a -tzip "${bin_name}.zip" cross-anvil.exe
                     mv "${bin_name}.zip" ../../../
+                    echo "file_name=${bin_name}.zip" >> $GITHUB_OUTPUT
                 fi
-                echo "file_name=${bin_name}.${PLATFORM_NAME == 'win32' ? 'zip' : 'tar.gz'}" >> $GITHUB_OUTPUT
 
             - name: Create release
               uses: softprops/action-gh-release@v1
