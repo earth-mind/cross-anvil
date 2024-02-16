@@ -92,6 +92,14 @@ async fn deploy_contracts(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         Create2Deployer,
         r#"[
             function deploy(uint256 amount, bytes32 salt, bytes memory bytecode) external payable returns (address addr)
+            function computeAddress(bytes32 salt, bytes32 bytecodeHash) external view returns (address addr)
+        ]"#,
+    );
+
+    abigen!(
+        MockGateway,
+        r#"[
+            function validateContractCall(bytes32, string calldata, string calldata, bytes32) external pure returns (bool)
         ]"#,
     );
 
@@ -100,36 +108,58 @@ async fn deploy_contracts(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             let addr = contract.address();
             println!("Create 2 contract deployed to: {}", addr);
 
-            let amount = U256::from(1);
-
-            println!("aqui 1");
+            let amount = U256::from(0);
 
             let bytecode = bytecode_gateway.unwrap(); // Bytecode del contrato de gateway.
-
-            println!("aqui");
 
             let salt_bytes = hex::decode(SALT)?;
 
             let salt_hash = keccak256(&salt_bytes);
 
-            // let salt: [u8; 32] = match hex::decode(SALT) {
-            //     Ok(bytes) => match bytes.try_into() {
-            //         Ok(array) => array,
-            //         Err(_) => return Err("Salt debe ser de exactamente 32 bytes.".into()),
-            //     },
-            //     Err(_) => return Err("Fallo al decodificar SALT.".into()),
-            // };
-
             println!("Deploying gateway contract...");
 
-            let contract_deployer = Create2Deployer::new(addr, client);
+            let contract_deployer = Create2Deployer::new(addr, client.clone());
+
+            let contract_address = contract_deployer
+                .compute_address(salt_hash, keccak256(&bytecode))
+                .await?;
+
+            println!("Contract address: {}", contract_address);
 
             let deploy_future = contract_deployer.deploy(amount, salt_hash, bytecode);
             let deploy_result = deploy_future.send().await;
 
             match deploy_result {
-                Ok(_) => {
-                    println!("Gateway contract deployed successfully to");
+                Ok(pending_tx) => {
+                    println!("resultado {:?}", pending_tx);
+
+                    let _receipt = pending_tx.confirmations(1).await?;
+
+                    let gateway_contract = MockGateway::new(contract_address, client.clone());
+                    let result_future = gateway_contract
+                        .validate_contract_call(
+                            salt_hash,
+                            SALT.to_string(),
+                            SALT.to_string(),
+                            salt_hash,
+                        )
+                        .await;
+
+                    match result_future {
+                        Ok(result) => {
+                            println!("Gateway contract validation result: {}", result);
+
+                            if result {
+                                println!("Gateway contract deployed successfully!");
+                            } else {
+                                eprintln!("Failed to deploy gateway contract");
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("Failed to validate gateway contract: {}", error);
+                            return Err(error.into());
+                        }
+                    }
                 }
                 Err(error) => {
                     eprintln!("Failed to deploy gateway contract: {}", error);
