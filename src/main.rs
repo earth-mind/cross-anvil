@@ -6,14 +6,13 @@ use std::sync::{
 use tokio::task;
 
 const DEFAULT_MNEMONIC: &str = "test test test test test test test test test test test junk";
-const DEFAULT_CHAIN_ID: u16 = 1337;
 
-async fn start_anvil_instance(port: u16, shutdown_signal: Arc<AtomicBool>) {
+async fn start_anvil_instance(port: u16, chain_id: u16, shutdown_signal: Arc<AtomicBool>) {
     task::spawn_blocking(move || {
         let _anvil_instance = Anvil::new()
             .port(port)
             .mnemonic(DEFAULT_MNEMONIC)
-            .chain_id(DEFAULT_CHAIN_ID)
+            .chain_id(chain_id)
             .args(vec!["--base-fee", "100"])
             .spawn();
 
@@ -33,12 +32,15 @@ async fn start_anvil_instance(port: u16, shutdown_signal: Arc<AtomicBool>) {
 async fn run_anvil_and_deploy(
     shutdown_signal: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let port1: u16 = 8545;
-    let port2: u16 = 8546;
+    let port1: u16 = 8555;
+    let port2: u16 = 8556;
+
+    let chain_id1: u16 = 31337;
+    let chain_id2: u16 = 31338;
 
     let _ = tokio::join!(
-        start_anvil_instance(port1, shutdown_signal.clone()),
-        start_anvil_instance(port2, shutdown_signal.clone())
+        start_anvil_instance(port1, chain_id1, shutdown_signal.clone()),
+        start_anvil_instance(port2, chain_id2, shutdown_signal.clone())
     );
 
     Ok(())
